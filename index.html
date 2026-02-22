@@ -1254,7 +1254,7 @@
             <rect x="2" y="6" width="18" height="12" rx="2"/>
             <line x1="22" y1="10" x2="22" y2="14"/>
           </svg>
-          <p>${LABELS[idx]} — not connected</p>
+          <p>${LABELS[idx]} â not connected</p>
           <button class="btn btn-primary btn-sm ${idx === 1 ? 'accent2' : ''}" onclick="addBmsDevice(${idx})">
             ${SVG.bt}
             Connect
@@ -1592,5 +1592,29 @@
 
     window.addEventListener('resize', drawChart);
   </script>
+
+<script>
+// Theme change observer - signals to parent portal
+(function() {
+  var lastTheme = '';
+  var observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      if (m.attributeName === 'class' || m.attributeName === 'data-theme') {
+        var el = document.documentElement;
+        var isDark = el.classList.contains('dark') || el.getAttribute('data-theme') === 'dark';
+        var newTheme = isDark ? 'dark' : 'asml';
+        if (newTheme !== lastTheme) {
+          lastTheme = newTheme;
+          if (window.parent !== window) {
+            try { window.parent.postMessage({ type: 'theme-change', theme: newTheme }, '*'); } catch(e) {}
+          }
+        }
+      }
+    });
+  });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] });
+  if (document.body) observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme'] });
+})();
+</script>
 </body>
 </html>
