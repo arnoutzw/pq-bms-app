@@ -64,6 +64,21 @@ This is a PWA that works entirely in your browser. For best experience:
 - Device with Bluetooth 5.0+ and Web Bluetooth API support
 - Modern web browser (Chrome/Edge 56+, Safari 13+)
 
+
+## Theme Support
+
+The app supports two themes:
+
+- **Dark** (default) - Dark background with amber accents
+- **ASML Light** - Light theme following ASML corporate design (deep blue #10069f, cyan accents)
+
+When embedded in the Black Sphere Industries portal, theme changes are communicated via `postMessage`:
+
+```javascript
+// Sent to parent when theme changes
+window.parent.postMessage({ type: "theme-change", theme: "dark" | "asml" }, "*");
+```
+
 ## License
 
 MIT License - feel free to use this project for personal or commercial purposes.
