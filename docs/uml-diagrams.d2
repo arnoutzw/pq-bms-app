@@ -1,0 +1,376 @@
+# Powerqueen BMS Monitor — UML Diagrams
+# Web Bluetooth app for monitoring Powerqueen LiFePO4 batteries (up to 2 simultaneous)
+
+# ============================================================
+# CLASSES
+# ============================================================
+class-diagram: {
+  label: "Class Diagram"
+
+  BmsConnection: BmsConnection {
+    shape: class
+    index: int
+    device: BluetoothDevice
+    server: BluetoothRemoteGATTServer
+    characteristic: BluetoothRemoteGATTCharacteristic
+    responseBuffer: Uint8Array
+    currentResolve: Function
+    connected: boolean
+    data: BatteryData
+    version: VersionInfo
+    history: HistoryBuffer
+
+    connect()
+    onNotification(event)
+    sendCommand(cmd, timeout)
+    fetchAll()
+    refresh()
+    pushHistory()
+    disconnect()
+    onDisconnected()
+    name: string
+  }
+
+  BatteryData: BatteryData {
+    shape: class
+    soc: number
+    voltage: number
+    current: number
+    power: number
+    capacity: number
+    fullCapacity: number
+    cycles: int
+    temperatures: "number[]"
+    cells: "CellVoltage[]"
+    deltaCell: number
+    chargeMos: boolean
+    dischargeMos: boolean
+    balancing: boolean
+    alarms: "string[]"
+  }
+
+  VersionInfo: VersionInfo {
+    shape: class
+    model: string
+    firmware: string
+    hardware: string
+    serial: string
+  }
+
+  HistoryBuffer: HistoryBuffer {
+    shape: class
+    timestamps: "string[]"
+    soc: "number[]"
+    voltage: "number[]"
+    MAX_HISTORY: "60"
+
+    push(entry)
+    shift()
+  }
+
+  CellVoltage: CellVoltage {
+    shape: class
+    index: int
+    voltage: number
+    barWidth: number
+    colorClass: string
+  }
+
+  ProtocolConstants: "BLE Protocol" {
+    shape: class
+    SERVICE_UUID: "0xFFE0"
+    CHAR_UUID: "0000ffe1-..."
+    CMD_GET_VERSION: "Uint8Array[8]"
+    CMD_GET_BATTERY: "Uint8Array[8]"
+  }
+
+  UIController: UIController {
+    shape: class
+    bms: "BmsConnection[2]"
+    autoRefreshInterval: int
+    historyChart: Chart
+
+    addBmsDevice(idx)
+    disconnectDevice(idx)
+    refreshAll()
+    toggleAutoRefresh()
+    updatePanel(idx)
+    updateCombined()
+    drawChart()
+    renderEmptyPanels()
+    buildPanelHtml(idx)
+    setHeaderDot(idx, state)
+    updateUI()
+  }
+
+  ChartManager: ChartManager {
+    shape: class
+    chart: "Chart.js instance"
+
+    drawChart()
+    updateDatasets()
+  }
+
+  Parser: "Protocol Parser" {
+    shape: class
+
+    parseBatteryData(packet)
+    parseVersionData(packet)
+    crcCheck(data)
+  }
+
+  # Relationships
+  UIController -> BmsConnection: "manages [0..2]"
+  BmsConnection -> BatteryData: "holds current"
+  BmsConnection -> VersionInfo: "holds"
+  BmsConnection -> HistoryBuffer: "accumulates"
+  BmsConnection -> ProtocolConstants: "uses"
+  UIController -> ChartManager: "updates"
+  Parser -> BatteryData: "produces"
+  Parser -> VersionInfo: "produces"
+}
+
+# ============================================================
+# SEQUENCE: MAIN — BLE Connection, Pairing, and Data Fetch
+# ============================================================
+seq-main: "BLE Connection and Data Fetch" {
+  shape: sequence_diagram
+
+  user: User
+  app: "PQ BMS App"
+  bt: "Web Bluetooth API"
+  browser: "Browser Picker"
+  gatt: "GATT Server"
+  service: "Service 0xFFE0"
+  char: "Char 0xFFE1"
+  bms: "PQ BMS Battery"
+
+  # Connect Battery 1
+  user -> app: "Click 'Connect Battery 1'"
+  app -> app: "setHeaderDot(0, 'connecting')"
+  app -> bt: "requestDevice({filters: [service: 0xFFE0]})"
+  bt -> browser: "Show BLE device picker"
+  browser -> user: "Select PQ BMS"
+  user -> browser: "Choose device"
+  browser -> bt: "BluetoothDevice"
+  bt -> app: "device"
+
+  # GATT Connection
+  app -> app: "device.addEventListener('gattserverdisconnected')"
+  app -> gatt: "device.gatt.connect()"
+  gatt -> app: "BluetoothRemoteGATTServer"
+  app -> service: "getPrimaryService(0xFFE0)"
+  service -> app: "BluetoothRemoteGATTService"
+  app -> char: "getCharacteristic(ffe1)"
+  char -> app: "BluetoothRemoteGATTCharacteristic"
+  app -> char: "startNotifications()"
+  char -> app: "Notifications enabled"
+  app -> char: "addEventListener('characteristicvaluechanged')"
+
+  # Show dashboard
+  app -> app: "Hide connectScreen, show dashboard"
+  app -> app: "buildPanelHtml(0)"
+
+  # Fetch version
+  app -> app: "fetchAll() — request version first"
+  app -> app: "responseBuffer = empty"
+  app -> char: "writeValueWithoutResponse(CMD_GET_VERSION)"
+  char -> bms: "Version command"
+  bms -> char: "Notification: version response chunks"
+  char -> app: "onNotification() — assemble responseBuffer"
+  app -> app: "Check: responseBuffer.length >= expectedLen"
+  app -> app: "Resolve promise with complete packet"
+  app -> app: "crcCheck(packet) -> parseVersionData()"
+
+  # Fetch battery data
+  app -> app: "Wait 500ms"
+  app -> char: "writeValueWithoutResponse(CMD_GET_BATTERY)"
+  char -> bms: "Battery command"
+  bms -> char: "Notification: battery response chunks"
+  char -> app: "onNotification() — assemble responseBuffer"
+  app -> app: "crcCheck(packet) -> parseBatteryData()"
+  app -> app: "pushHistory()"
+
+  # Update UI
+  app -> app: "updatePanel(0) — SOC ring, stats, cells"
+  app -> app: "updateCombined() — combined banner"
+  app -> app: "drawChart() — Chart.js history"
+}
+
+# ============================================================
+# SEQUENCE: SECONDARY — Auto-Refresh and Dual Battery
+# ============================================================
+seq-secondary: "Auto-Refresh and Dual Battery Management" {
+  shape: sequence_diagram
+
+  user: User
+  app: "PQ BMS App"
+  bms0: "BmsConnection[0]"
+  bms1: "BmsConnection[1]"
+  char0: "Char (Battery 1)"
+  char1: "Char (Battery 2)"
+  chart: "Chart.js"
+
+  # Connect second battery
+  user -> app: "Click 'Add Battery 2'"
+  app -> bms1: "bms[1].connect()"
+  bms1 -> app: "Connected"
+  app -> bms1: "fetchAll()"
+  bms1 -> char1: "CMD_GET_VERSION"
+  char1 -> bms1: "Version response"
+  bms1 -> char1: "CMD_GET_BATTERY"
+  char1 -> bms1: "Battery response"
+  app -> app: "updatePanel(1)"
+  app -> app: "Both connected: show combined banner"
+  app -> app: "updateCombined() — total V, capacity, power, energy"
+  app -> app: "Hide 'Add Battery 2' button"
+
+  # Enable auto-refresh
+  user -> app: "Click 'Auto: Off' -> 'Auto: 5s'"
+  app -> app: "setInterval(refreshAll, 5000)"
+
+  # Auto-refresh cycle
+  app -> bms0: "refresh()"
+  bms0 -> char0: "CMD_GET_BATTERY"
+  char0 -> bms0: "Battery data"
+  bms0 -> bms0: "parseBatteryData() + pushHistory()"
+  app -> bms1: "refresh()"
+  bms1 -> char1: "CMD_GET_BATTERY"
+  char1 -> bms1: "Battery data"
+  bms1 -> bms1: "parseBatteryData() + pushHistory()"
+  app -> app: "Promise.all([refresh0, refresh1])"
+  app -> app: "updatePanel(0), updatePanel(1)"
+  app -> app: "updateCombined()"
+  app -> chart: "drawChart() — dual datasets"
+
+  # Disconnect one battery
+  user -> app: "Click disconnect on Battery 2"
+  app -> bms1: "disconnect()"
+  bms1 -> app: "onDisconnected()"
+  app -> app: "renderEmptyPanel(1)"
+  app -> app: "Show 'Add Battery' button"
+  app -> app: "updateCombined() — single battery only"
+}
+
+# ============================================================
+# ARCHITECTURE
+# ============================================================
+architecture: "System Architecture" {
+  browser: "Chrome / Edge / Opera" {
+    shape: cloud
+
+    pwa: "PWA Shell" {
+      sw: "Service Worker"
+      manifest: "manifest.json"
+    }
+
+    ui: "User Interface" {
+      connect-screen: "Connect Screen" {
+        battery-icon: "Animated battery icon"
+        btn-connect: "Connect Battery 1"
+      }
+      dashboard: "Dashboard" {
+        toolbar: "Toolbar (Refresh, Auto, Add)"
+        combined: "Combined Banner (2-battery summary)"
+        panels: "Dual Layout" {
+          panel0: "Battery 1 Panel"
+          panel1: "Battery 2 Panel"
+        }
+        history: "Live History Chart"
+      }
+      per-panel: "Per-Panel Sections" {
+        soc-ring: "SOC Ring Gauge"
+        stats: "V / A / W quick stats"
+        cells: "Cell Voltage Grid"
+        temps: "Temperature readings"
+        protection: "Protection Status"
+        device-info: "Version / Serial"
+      }
+    }
+
+    logic: "Application Logic" {
+      bms-connections: "BmsConnection[2]"
+      protocol: "Command/Response Protocol"
+      parser: "Packet Parser + CRC"
+      chart-mgr: "Chart.js Manager"
+      theme: "BSI Theme Bridge"
+    }
+  }
+
+  ble: "Web Bluetooth API" {
+    shape: hexagon
+  }
+
+  hardware: "LiFePO4 Batteries" {
+    shape: rectangle
+    batt1: "Powerqueen Battery 1" {
+      bms: "Built-in BMS"
+      ble: "BLE Module (0xFFE0)"
+      cells: "LiFePO4 Cells (4S)"
+    }
+    batt2: "Powerqueen Battery 2" {
+      bms2: "Built-in BMS"
+      ble2: "BLE Module (0xFFE0)"
+    }
+  }
+
+  chartjs: "Chart.js CDN" {
+    shape: cylinder
+  }
+
+  browser.logic.bms-connections -> ble: "GATT read/write/notify"
+  ble -> hardware.batt1.ble: "BLE 4.0"
+  ble -> hardware.batt2.ble2: "BLE 4.0"
+  browser.logic.chart-mgr -> chartjs: "CDN import"
+}
+
+# ============================================================
+# STATES — BMS Connection State Machine
+# ============================================================
+states: "BMS Connection State Machine" {
+  disconnected: "Disconnected\n(No device)" {
+    style.fill: "#27272a"
+  }
+  scanning: "Scanning\n(Bluetooth picker)" {
+    style.fill: "#3f3f46"
+  }
+  connecting: "Connecting\n(GATT + service setup)" {
+    style.fill: "#fbbf24"
+    style.font-color: "#000"
+  }
+  connected: "Connected\n(Characteristic ready)" {
+    style.fill: "#4ade80"
+    style.font-color: "#000"
+  }
+  fetching: "Fetching\n(Version + Battery data)" {
+    style.fill: "#60a5fa"
+    style.font-color: "#000"
+  }
+  monitoring: "Monitoring\n(Auto-refresh active)" {
+    style.fill: "#22c55e"
+    style.font-color: "#000"
+  }
+  refreshing: "Refreshing\n(Polling battery data)" {
+    style.fill: "#f59e0b"
+    style.font-color: "#000"
+  }
+  error: "Error\n(Timeout / CRC fail)" {
+    style.fill: "#f87171"
+    style.font-color: "#000"
+  }
+
+  disconnected -> scanning: "addBmsDevice(idx)"
+  scanning -> connecting: "Device selected"
+  scanning -> disconnected: "User cancelled"
+  connecting -> connected: "GATT + notifications ready"
+  connecting -> error: "Connection failed"
+  connected -> fetching: "fetchAll()"
+  fetching -> monitoring: "Version + battery parsed OK"
+  fetching -> error: "Response timeout / CRC error"
+  monitoring -> refreshing: "Auto-refresh timer / manual refresh"
+  refreshing -> monitoring: "Battery data updated"
+  refreshing -> error: "Refresh failed"
+  monitoring -> disconnected: "User disconnect / gattserverdisconnected"
+  error -> disconnected: "onDisconnected()"
+  error -> fetching: "Retry"
+}
