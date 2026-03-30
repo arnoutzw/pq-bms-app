@@ -861,6 +861,34 @@
       </div>
     </div>
 
+    <!-- Combined System History -->
+    <div class="history-section fade-in" id="combinedHistorySection" style="display:none">
+      <div class="section open" id="sectionCombinedHistory">
+        <div class="section-header" onclick="toggleSection('sectionCombinedHistory')">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+            </svg>
+            Combined System History
+          </div>
+          <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="section-body"><div class="section-content">
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:8px">
+            <label for="powerAvgWindow" style="font-size:12px;color:var(--text-dim)">Power smoothing</label>
+            <select id="powerAvgWindow" onchange="setCombinedPowerAvgWindow(this.value)" style="background:var(--bg-soft);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px">
+              <option value="1">Off (raw)</option>
+              <option value="3">3 samples</option>
+              <option value="5">5 samples</option>
+              <option value="10">10 samples</option>
+            </select>
+          </div>
+          <div class="chart-container"><canvas id="combinedChart"></canvas></div>
+          <div class="chart-legend" id="combinedChartLegend"></div>
+        </div></div>
+      </div>
+    </div>
+
     <div id="lastUpdate" class="last-update"></div>
   </div>
 
@@ -876,6 +904,7 @@
 
     const MAX_HISTORY = 60;
     const COLORS = ['#f59e0b', '#fbbf24'];       // accent per device
+    const DELTA_COLORS = ['#60a5fa', '#a78bfa']; // balance delta per device
     const COLOR_NAMES = ['var(--accent)', 'var(--accent2)'];
     const LABELS = ['Battery 1', 'Battery 2'];
 
@@ -891,7 +920,7 @@
         this.connected = false;
         this.data = null;       // latest parsed battery data
         this.version = null;    // parsed version info
-        this.history = { timestamps: [], soc: [], voltage: [] };
+        this.history = { timestamps: [], soc: [], voltage: [], delta: [] };
       }
 
       async connect() {
@@ -987,13 +1016,19 @@
       pushHistory() {
         if (!this.data) return;
         const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const cellVals = Object.values(this.data.cells);
+        const delta = cellVals.length >= 2
+          ? (Math.max(...cellVals) - Math.min(...cellVals)) * 1000
+          : 0;
         this.history.timestamps.push(now);
         this.history.soc.push(this.data.soc);
         this.history.voltage.push(this.data.voltage);
+        this.history.delta.push(delta);
         if (this.history.timestamps.length > MAX_HISTORY) {
           this.history.timestamps.shift();
           this.history.soc.shift();
           this.history.voltage.shift();
+          this.history.delta.shift();
         }
       }
 
@@ -1018,6 +1053,9 @@
 
     // ===== Global State =====
     const bms = [new BmsConnection(0), new BmsConnection(1)];
+    const combinedHistory = { timestamps: [], power: [], energy: [] };
+    const POWER_AVG_STORAGE_KEY = 'combinedPowerAvgWindow';
+    let combinedPowerAvgWindow = 5;
     let autoRefreshInterval = null;
 
     // ===== Init =====
@@ -1029,6 +1067,10 @@
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js').catch(() => {});
       }
+      const savedAvg = Number(localStorage.getItem(POWER_AVG_STORAGE_KEY));
+      if ([1, 3, 5, 10].includes(savedAvg)) combinedPowerAvgWindow = savedAvg;
+      const avgSelect = document.getElementById('powerAvgWindow');
+      if (avgSelect) avgSelect.value = String(combinedPowerAvgWindow);
       renderEmptyPanels();
     });
 
@@ -1056,6 +1098,7 @@
         updatePanel(idx);
         updateCombined();
         drawChart();
+        drawCombinedChart();
         updateLastUpdate();
 
         // If both connected, hide "add second" button
@@ -1107,6 +1150,7 @@
 
       updateCombined();
       drawChart();
+      drawCombinedChart();
     }
 
     function updateUI() {
@@ -1117,6 +1161,7 @@
       }
       updateCombined();
       drawChart();
+      drawCombinedChart();
 
       if (!bms[0].connected && !bms[1].connected) {
         if (autoRefreshInterval) toggleAutoRefresh();
@@ -1152,6 +1197,7 @@
       await Promise.all(promises);
       updateCombined();
       drawChart();
+      drawCombinedChart();
       updateLastUpdate();
     }
 
@@ -1443,6 +1489,16 @@
       const wh0 = d0.voltage * d0.remainAh;
       const wh1 = d1.voltage * d1.remainAh;
       document.getElementById('combEnergy').textContent = (wh0 + wh1).toFixed(0) + ' Wh';
+
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      combinedHistory.timestamps.push(now);
+      combinedHistory.power.push(totalP);
+      combinedHistory.energy.push(wh0 + wh1);
+      if (combinedHistory.timestamps.length > MAX_HISTORY) {
+        combinedHistory.timestamps.shift();
+        combinedHistory.power.shift();
+        combinedHistory.energy.shift();
+      }
     }
 
     // ===== Refresh Single Device =====
@@ -1453,6 +1509,7 @@
         updatePanel(idx);
         updateCombined();
         drawChart();
+        drawCombinedChart();
         updateLastUpdate();
       } catch (err) {
         showToast(`BMS ${idx + 1}: ${err.message}`);
@@ -1598,7 +1655,6 @@
         if (h.soc.length < 2) continue;
 
         const color = COLORS[i];
-        const dashed = false;
 
         // SOC line (solid)
         drawLine(ctx, h.soc, 0, 100, padL, padT, plotW, plotH, color, 2, false);
@@ -1606,28 +1662,90 @@
         const vMin = Math.min(...h.voltage) - 0.5;
         const vMax = Math.max(...h.voltage) + 0.5;
         drawLine(ctx, h.voltage, vMin, vMax, padL, padT, plotW, plotH, color, 1.5, true);
+        // Delta line (dotted)
+        if (h.delta.length >= 2) {
+          const dMin = 0;
+          const dMax = Math.max(100, Math.max(...h.delta) * 1.1);
+          drawLine(ctx, h.delta, dMin, dMax, padL, padT, plotW, plotH, DELTA_COLORS[i], 1.5, false, [3, 3]);
+        }
 
         // Labels
         const lastSoc = h.soc[h.soc.length - 1];
         const lastV = h.voltage[h.voltage.length - 1];
+        const lastDelta = h.delta[h.delta.length - 1] || 0;
+        const label = `#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V / ${lastDelta.toFixed(0)}mV`;
         ctx.fillStyle = color;
         ctx.font = 'bold 11px -apple-system, sans-serif';
-        ctx.fillText(`#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V`, labelX, 14);
-        labelX += ctx.measureText(`#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V`).width + 20;
+        ctx.fillText(label, labelX, 14);
+        labelX += ctx.measureText(label).width + 20;
 
-        legendHtml += `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${color}"></div>BMS ${i + 1} SOC (solid) / V (dashed)</div>`;
+        legendHtml += `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${color}"></div>BMS ${i + 1} SOC (solid) / V (dashed) / <span style="color:${DELTA_COLORS[i]}">Δ mV (dotted)</span></div>`;
       }
 
       legendEl.innerHTML = legendHtml;
     }
 
-    function drawLine(ctx, data, min, max, padL, padT, plotW, plotH, color, lineWidth, dashed) {
+    function drawCombinedChart() {
+      const section = document.getElementById('combinedHistorySection');
+      const both = bms[0].connected && bms[0].data && bms[1].connected && bms[1].data;
+      section.style.display = both ? '' : 'none';
+      if (!both || combinedHistory.power.length < 2) return;
+
+      const canvas = document.getElementById('combinedChart');
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      const W = rect.width, H = rect.height;
+      ctx.clearRect(0, 0, W, H);
+
+      const padL = 8, padR = 8, padT = 20, padB = 8;
+      const plotW = W - padL - padR, plotH = H - padT - padB;
+
+      const avgPower = movingAverage(combinedHistory.power, combinedPowerAvgWindow);
+
+      const pMin = 0;
+      const pMax = Math.max(100, Math.max(...combinedHistory.power, ...avgPower) * 1.1);
+      if (combinedPowerAvgWindow > 1) {
+        drawLine(ctx, combinedHistory.power, pMin, pMax, padL, padT, plotW, plotH, 'rgba(34,197,94,0.35)', 1.25, false);
+        drawLine(ctx, avgPower, pMin, pMax, padL, padT, plotW, plotH, '#22c55e', 2.25, false);
+      } else {
+        drawLine(ctx, combinedHistory.power, pMin, pMax, padL, padT, plotW, plotH, '#22c55e', 2, false);
+      }
+
+      const eMin = Math.min(...combinedHistory.energy) * 0.9;
+      const eMax = Math.max(100, Math.max(...combinedHistory.energy) * 1.1);
+      drawLine(ctx, combinedHistory.energy, eMin, eMax, padL, padT, plotW, plotH, '#06b6d4', 1.5, true);
+
+      const lastP = combinedHistory.power[combinedHistory.power.length - 1];
+      const lastAvgP = avgPower[avgPower.length - 1];
+      const lastE = combinedHistory.energy[combinedHistory.energy.length - 1];
+      ctx.fillStyle = '#22c55e';
+      ctx.font = 'bold 11px -apple-system, sans-serif';
+      const powerLabel = combinedPowerAvgWindow > 1
+        ? `Power: ${lastP.toFixed(1)} W (avg ${lastAvgP.toFixed(1)} W, ${combinedPowerAvgWindow}-sample)`
+        : `Power: ${lastP.toFixed(1)} W`;
+      ctx.fillText(powerLabel, padL, 14);
+      const pwLabel = ctx.measureText(powerLabel).width;
+      ctx.fillStyle = '#06b6d4';
+      ctx.fillText(`Energy: ${lastE.toFixed(0)} Wh`, padL + pwLabel + 20, 14);
+
+      document.getElementById('combinedChartLegend').innerHTML = combinedPowerAvgWindow > 1
+        ? '<div class="chart-legend-item"><div class="chart-legend-dot" style="background:rgba(34,197,94,0.35)"></div>Combined Power Raw (W)</div>' +
+          `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:#22c55e"></div>Combined Power (${combinedPowerAvgWindow}-sample MA)</div>` +
+          '<div class="chart-legend-item"><div class="chart-legend-dot" style="background:#06b6d4"></div>Stored Energy (Wh, dashed)</div>'
+        : '<div class="chart-legend-item"><div class="chart-legend-dot" style="background:#22c55e"></div>Combined Power (W)</div>' +
+          '<div class="chart-legend-item"><div class="chart-legend-dot" style="background:#06b6d4"></div>Stored Energy (Wh, dashed)</div>';
+    }
+
+    function drawLine(ctx, data, min, max, padL, padT, plotW, plotH, color, lineWidth, dashed, dashPattern) {
       ctx.beginPath();
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
       ctx.lineJoin = 'round';
-      if (dashed) ctx.setLineDash([6, 3]);
-      else ctx.setLineDash([]);
+      ctx.setLineDash(dashPattern || (dashed ? [6, 3] : []));
 
       data.forEach((val, i) => {
         const x = padL + (i / (data.length - 1)) * plotW;
@@ -1637,6 +1755,27 @@
       });
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    function movingAverage(data, windowSize) {
+      if (!Array.isArray(data) || data.length === 0) return [];
+      if (windowSize <= 1) return data.slice();
+      const avg = [];
+      for (let i = 0; i < data.length; i++) {
+        const start = Math.max(0, i - windowSize + 1);
+        let sum = 0;
+        for (let j = start; j <= i; j++) sum += data[j];
+        avg.push(sum / (i - start + 1));
+      }
+      return avg;
+    }
+
+    function setCombinedPowerAvgWindow(value) {
+      const n = Number(value);
+      if (![1, 3, 5, 10].includes(n)) return;
+      combinedPowerAvgWindow = n;
+      localStorage.setItem(POWER_AVG_STORAGE_KEY, String(n));
+      drawCombinedChart();
     }
 
     // ===== UI Helpers =====
@@ -1651,7 +1790,10 @@
       setTimeout(() => t.classList.remove('visible'), 3500);
     }
 
-    window.addEventListener('resize', drawChart);
+    window.addEventListener('resize', () => {
+      drawChart();
+      drawCombinedChart();
+    });
   </script>
 
 </body>
