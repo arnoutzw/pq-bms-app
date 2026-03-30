@@ -11,6 +11,7 @@
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon-192.png">
   <title>Powerqueen BMS Monitor</title>
+  <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -638,13 +639,25 @@
 
     .chart-container {
       width: 100%;
-      height: 160px;
+      height: 220px;
       margin-top: 8px;
     }
 
-    .chart-container canvas {
-      width: 100% !important;
-      height: 100% !important;
+    .chart-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+    }
+    .chart-controls select {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 2px 4px;
+      font-size: 0.72rem;
     }
 
     .chart-legend {
@@ -844,8 +857,7 @@
           <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="section-body"><div class="section-content">
-          <div class="chart-container"><canvas id="combinedHistoryChart"></canvas></div>
-          <div class="chart-legend" id="combinedChartLegend"></div>
+          <div class="chart-container" id="combinedHistoryChart"></div>
         </div></div>
       </div>
     </div>
@@ -871,8 +883,17 @@
           <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="section-body"><div class="section-content">
-          <div class="chart-container"><canvas id="historyChart"></canvas></div>
-          <div class="chart-legend" id="chartLegend"></div>
+          <div class="chart-controls">
+            <span>Moving Avg:</span>
+            <select id="maWindow" onchange="setMaWindow(+this.value)">
+              <option value="0">Off</option>
+              <option value="3">3 pts</option>
+              <option value="5">5 pts</option>
+              <option value="10">10 pts</option>
+              <option value="20">20 pts</option>
+            </select>
+          </div>
+          <div class="chart-container" id="historyChart"></div>
         </div></div>
       </div>
     </div>
@@ -1042,6 +1063,21 @@
     const bms = [new BmsConnection(0), new BmsConnection(1)];
     const combinedHistory = { timestamps: [], power: [], energy: [] };
     let autoRefreshInterval = null;
+    let maWindow = 0;
+
+    function setMaWindow(w) {
+      maWindow = w;
+      drawChart();
+      drawCombinedChart();
+    }
+
+    function movingAverage(data, w) {
+      if (!w || w < 2) return null;
+      return data.map((_, i) => {
+        const slice = data.slice(Math.max(0, i - w + 1), i + 1);
+        return slice.reduce((a, b) => a + b, 0) / slice.length;
+      });
+    }
 
     // ===== Init =====
     window.addEventListener('DOMContentLoaded', () => {
@@ -1608,130 +1644,102 @@
     }
 
     // ===== Chart =====
+    const PLOTLY_LAYOUT_BASE = {
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: 'rgba(255,255,255,0.03)',
+      font: { color: '#a1a1a1', size: 9 },
+      margin: { l: 36, r: 36, t: 8, b: 40 },
+      showlegend: true,
+      legend: { orientation: 'h', y: -0.3, font: { size: 9 } },
+      xaxis: { tickfont: { size: 8 }, gridcolor: '#2a2a2a', linecolor: '#333', tickangle: -30 },
+    };
+    const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
+
     function drawChart() {
-      const canvas = document.getElementById('historyChart');
-      const ctx = canvas.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.parentElement.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
-      const W = rect.width;
-      const H = rect.height;
-      ctx.clearRect(0, 0, W, H);
+      const el = document.getElementById('historyChart');
+      if (!el) return;
 
-      const padL = 8, padR = 8, padT = 20, padB = 8;
-      const plotW = W - padL - padR;
-      const plotH = H - padT - padB;
+      const layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+        yaxis:  { title: '%', range: [0, 100], tickfont: { size: 8 }, gridcolor: '#2a2a2a', side: 'left' },
+        yaxis2: { title: 'V', overlaying: 'y', side: 'right', tickfont: { size: 8 }, showgrid: false },
+        yaxis3: { overlaying: 'y', side: 'right', tickfont: { size: 8 }, showgrid: false,
+                  showticklabels: false, range: [0, null] },
+      });
 
-      // Build legend
-      const legendEl = document.getElementById('chartLegend');
-      let legendHtml = '';
-
-      // Draw series for each connected device
-      let labelX = padL;
+      const traces = [];
       for (let i = 0; i < 2; i++) {
         const h = bms[i].history;
         if (h.soc.length < 2) continue;
-
         const color = COLORS[i];
+        const xs = h.timestamps;
+        const label = `B${i + 1}`;
 
-        // SOC line (solid)
-        drawLine(ctx, h.soc, 0, 100, padL, padT, plotW, plotH, color, 2, false);
-        // Voltage line (dashed)
-        const vMin = Math.min(...h.voltage) - 0.5;
-        const vMax = Math.max(...h.voltage) + 0.5;
-        drawLine(ctx, h.voltage, vMin, vMax, padL, padT, plotW, plotH, color, 1.5, true);
-        // Delta line (dotted, in mV)
-        if (h.delta.length >= 2) {
-          const dMin = 0;
-          const dMax = Math.max(Math.max(...h.delta) * 1.2, 50);
-          drawLine(ctx, h.delta, dMin, dMax, padL, padT, plotW, plotH, color, 1.5, false, [2, 4]);
-        }
+        traces.push({ name: `${label} SOC`, x: xs, y: h.soc, mode: 'lines',
+          line: { color, width: 2 }, yaxis: 'y',
+          hovertemplate: '%{y:.0f}%<extra>' + label + ' SOC</extra>' });
 
-        // Labels
-        const lastSoc = h.soc[h.soc.length - 1];
-        const lastV = h.voltage[h.voltage.length - 1];
-        const lastD = h.delta.length ? h.delta[h.delta.length - 1].toFixed(1) : '--';
-        ctx.fillStyle = color;
-        ctx.font = 'bold 11px -apple-system, sans-serif';
-        ctx.fillText(`#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V / Δ${lastD}mV`, labelX, 14);
-        labelX += ctx.measureText(`#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V / Δ${lastD}mV`).width + 20;
+        const ma_soc = movingAverage(h.soc, maWindow);
+        if (ma_soc) traces.push({ name: `${label} SOC MA${maWindow}`, x: xs, y: ma_soc,
+          mode: 'lines', line: { color, width: 1.5, dash: 'dot' }, opacity: 0.7,
+          yaxis: 'y', showlegend: false,
+          hovertemplate: '%{y:.1f}%<extra>' + label + ' SOC MA</extra>' });
 
-        legendHtml += `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${color}"></div>BMS ${i + 1} SOC (solid) / V (dashed) / ΔmV (dotted)</div>`;
+        traces.push({ name: `${label} V`, x: xs, y: h.voltage, mode: 'lines',
+          line: { color, width: 1.5, dash: 'dash' }, yaxis: 'y2',
+          hovertemplate: '%{y:.2f} V<extra>' + label + ' Voltage</extra>' });
+
+        traces.push({ name: `${label} ΔmV`, x: xs, y: h.delta, mode: 'lines',
+          line: { color, width: 1.5, dash: 'dot' }, yaxis: 'y3',
+          hovertemplate: '%{y:.1f} mV<extra>' + label + ' Delta</extra>' });
+
+        const ma_delta = movingAverage(h.delta, maWindow);
+        if (ma_delta) traces.push({ name: `${label} Δ MA${maWindow}`, x: xs, y: ma_delta,
+          mode: 'lines', line: { color, width: 1, dash: 'longdash' }, opacity: 0.6,
+          yaxis: 'y3', showlegend: false,
+          hovertemplate: '%{y:.1f} mV<extra>' + label + ' Delta MA</extra>' });
       }
 
-      legendEl.innerHTML = legendHtml;
+      Plotly.react(el, traces, layout, PLOTLY_CONFIG);
     }
 
     function drawCombinedChart() {
-      const canvas = document.getElementById('combinedHistoryChart');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.parentElement.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
-      const W = rect.width;
-      const H = rect.height;
-      ctx.clearRect(0, 0, W, H);
-
+      const el = document.getElementById('combinedHistoryChart');
+      if (!el) return;
       const h = combinedHistory;
       if (h.power.length < 2) return;
-
-      const padL = 8, padR = 8, padT = 20, padB = 8;
-      const plotW = W - padL - padR;
-      const plotH = H - padT - padB;
 
       const POWER_COLOR = '#60a5fa';
       const ENERGY_COLOR = '#34d399';
 
-      // Total Power line (solid, blue)
-      const pMin = Math.max(0, Math.min(...h.power) - 10);
-      const pMax = Math.max(...h.power) + 10;
-      drawLine(ctx, h.power, pMin, pMax, padL, padT, plotW, plotH, POWER_COLOR, 2, false);
+      const traces = [
+        { name: 'Power (W)', x: h.timestamps, y: h.power, mode: 'lines',
+          line: { color: POWER_COLOR, width: 2 }, yaxis: 'y',
+          hovertemplate: '%{y:.1f} W<extra>Power</extra>' },
+        { name: 'Energy (Wh)', x: h.timestamps, y: h.energy, mode: 'lines',
+          line: { color: ENERGY_COLOR, width: 1.5, dash: 'dash' }, yaxis: 'y2',
+          hovertemplate: '%{y:.0f} Wh<extra>Energy</extra>' },
+      ];
 
-      // Stored Energy line (dashed, green)
-      const eMin = Math.max(0, Math.min(...h.energy) - 10);
-      const eMax = Math.max(...h.energy) + 10;
-      drawLine(ctx, h.energy, eMin, eMax, padL, padT, plotW, plotH, ENERGY_COLOR, 1.5, true);
+      const ma_p = movingAverage(h.power, maWindow);
+      if (ma_p) traces.push({ name: `Power MA${maWindow}`, x: h.timestamps, y: ma_p,
+        mode: 'lines', line: { color: POWER_COLOR, width: 1.5, dash: 'dot' }, opacity: 0.7,
+        yaxis: 'y', showlegend: false,
+        hovertemplate: '%{y:.1f} W<extra>Power MA</extra>' });
 
-      // Labels
-      const lastP = h.power[h.power.length - 1].toFixed(1);
-      const lastE = h.energy[h.energy.length - 1].toFixed(0);
-      ctx.font = 'bold 11px -apple-system, sans-serif';
-      ctx.fillStyle = POWER_COLOR;
-      ctx.fillText(`${lastP} W`, padL, 14);
-      const wLabel = ctx.measureText(`${lastP} W`).width;
-      ctx.fillStyle = ENERGY_COLOR;
-      ctx.fillText(`${lastE} Wh`, padL + wLabel + 20, 14);
+      const ma_e = movingAverage(h.energy, maWindow);
+      if (ma_e) traces.push({ name: `Energy MA${maWindow}`, x: h.timestamps, y: ma_e,
+        mode: 'lines', line: { color: ENERGY_COLOR, width: 1.5, dash: 'dot' }, opacity: 0.7,
+        yaxis: 'y2', showlegend: false,
+        hovertemplate: '%{y:.0f} Wh<extra>Energy MA</extra>' });
 
-      const legendEl = document.getElementById('combinedChartLegend');
-      if (legendEl) {
-        legendEl.innerHTML =
-          `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${POWER_COLOR}"></div>Total Power (solid)</div>` +
-          `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${ENERGY_COLOR}"></div>Stored Energy (dashed)</div>`;
-      }
-    }
-
-    function drawLine(ctx, data, min, max, padL, padT, plotW, plotH, color, lineWidth, dashed, dashPattern) {
-      ctx.beginPath();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lineWidth;
-      ctx.lineJoin = 'round';
-      if (dashPattern) ctx.setLineDash(dashPattern);
-      else if (dashed) ctx.setLineDash([6, 3]);
-      else ctx.setLineDash([]);
-
-      data.forEach((val, i) => {
-        const x = padL + (i / (data.length - 1)) * plotW;
-        const y = padT + plotH - ((val - min) / (max - min)) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+      const layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+        yaxis:  { title: 'W', tickfont: { size: 8 }, gridcolor: '#2a2a2a', side: 'left',
+                  tickcolor: POWER_COLOR, titlefont: { color: POWER_COLOR } },
+        yaxis2: { title: 'Wh', overlaying: 'y', side: 'right', tickfont: { size: 8 },
+                  showgrid: false, tickcolor: ENERGY_COLOR, titlefont: { color: ENERGY_COLOR } },
       });
-      ctx.stroke();
-      ctx.setLineDash([]);
+
+      Plotly.react(el, traces, layout, PLOTLY_CONFIG);
     }
 
     // ===== UI Helpers =====
@@ -1746,7 +1754,10 @@
       setTimeout(() => t.classList.remove('visible'), 3500);
     }
 
-    window.addEventListener('resize', () => { drawChart(); drawCombinedChart(); });
+    window.addEventListener('resize', () => {
+      Plotly.Plots.resize('historyChart');
+      Plotly.Plots.resize('combinedHistoryChart');
+    });
   </script>
 
 </body>
