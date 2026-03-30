@@ -1971,13 +1971,13 @@
       const ma_p = movingAverage(h.power, settings.ma_power);
       if (ma_p) traces.push({ name: `Power MA${settings.ma_power}`, x: h.timestamps, y: ma_p,
         mode: 'lines', line: { color: POWER_COLOR, width: 1.5, dash: 'dot' }, opacity: 0.7,
-        yaxis: 'y', showlegend: false,
+        yaxis: 'y',
         hovertemplate: '%{y:.1f} W<extra>Power MA</extra>' });
 
       const ma_e = movingAverage(h.energy, settings.ma_energy);
       if (ma_e) traces.push({ name: `Energy MA${settings.ma_energy}`, x: h.timestamps, y: ma_e,
         mode: 'lines', line: { color: ENERGY_COLOR, width: 1.5, dash: 'dot' }, opacity: 0.7,
-        yaxis: 'y2', showlegend: false,
+        yaxis: 'y2',
         hovertemplate: '%{y:.0f} Wh<extra>Energy MA</extra>' });
 
       const layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
