@@ -1887,6 +1887,16 @@
     };
     const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
 
+    function preserveTraceVisibility(el, traces) {
+      if (!el || !el.data) return traces;
+      const vis = {};
+      el.data.forEach(t => { if (t.name) vis[t.name] = t.visible; });
+      return traces.map(t => {
+        if (t.name && vis[t.name] === 'legendonly') t.visible = 'legendonly';
+        return t;
+      });
+    }
+
     function drawChart() {
       const el = document.getElementById('historyChart');
       if (!el) return;
@@ -1937,7 +1947,7 @@
           hovertemplate: '%{y:.1f} mV<extra>' + label + ' Delta MA</extra>' });
       }
 
-      Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+      Plotly.react(el, preserveTraceVisibility(el, traces), layout, PLOTLY_CONFIG);
     }
 
     function drawCombinedChart() {
@@ -1977,7 +1987,7 @@
                   showgrid: false, tickcolor: ENERGY_COLOR, titlefont: { color: ENERGY_COLOR } },
       });
 
-      Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+      Plotly.react(el, preserveTraceVisibility(el, traces), layout, PLOTLY_CONFIG);
     }
 
     // ===== PowerStream UI =====
@@ -2032,7 +2042,7 @@
         yaxis2: { title: '%', overlaying: 'y', side: 'right', range: [0, 100],
                   tickfont: { size: 8 }, showgrid: false },
       });
-      Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+      Plotly.react(el, preserveTraceVisibility(el, traces), layout, PLOTLY_CONFIG);
     }
 
     function togglePowerStream() {
