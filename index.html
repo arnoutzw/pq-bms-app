@@ -832,6 +832,22 @@
           <div class="combined-stat-label">Stored Energy</div>
         </div>
       </div>
+      <!-- Combined Live History -->
+      <div class="section" id="sectionCombinedHistory" style="margin-top:12px;">
+        <div class="section-header" onclick="toggleSection('sectionCombinedHistory')">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            Live History
+          </div>
+          <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="section-body"><div class="section-content">
+          <div class="chart-container"><canvas id="combinedHistoryChart"></canvas></div>
+          <div class="chart-legend" id="combinedChartLegend"></div>
+        </div></div>
+      </div>
     </div>
 
     <!-- Dual Layout -->
@@ -861,25 +877,6 @@
       </div>
     </div>
 
-    <!-- Combined System History -->
-    <div class="history-section fade-in" id="combinedHistorySection" style="display:none">
-      <div class="section open" id="sectionCombinedHistory">
-        <div class="section-header" onclick="toggleSection('sectionCombinedHistory')">
-          <div class="section-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-            </svg>
-            Combined System History
-          </div>
-          <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div class="section-body"><div class="section-content">
-          <div class="chart-container"><canvas id="combinedChart"></canvas></div>
-          <div class="chart-legend" id="combinedChartLegend"></div>
-        </div></div>
-      </div>
-    </div>
-
     <div id="lastUpdate" class="last-update"></div>
   </div>
 
@@ -895,7 +892,6 @@
 
     const MAX_HISTORY = 60;
     const COLORS = ['#f59e0b', '#fbbf24'];       // accent per device
-    const DELTA_COLORS = ['#60a5fa', '#a78bfa']; // balance delta per device
     const COLOR_NAMES = ['var(--accent)', 'var(--accent2)'];
     const LABELS = ['Battery 1', 'Battery 2'];
 
@@ -1007,14 +1003,14 @@
       pushHistory() {
         if (!this.data) return;
         const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const cellVals = Object.values(this.data.cells);
-        const delta = cellVals.length >= 2
-          ? (Math.max(...cellVals) - Math.min(...cellVals)) * 1000
-          : 0;
         this.history.timestamps.push(now);
         this.history.soc.push(this.data.soc);
         this.history.voltage.push(this.data.voltage);
-        this.history.delta.push(delta);
+        const cellVoltages = Object.values(this.data.cells);
+        const deltaV = cellVoltages.length >= 2
+          ? (Math.max(...cellVoltages) - Math.min(...cellVoltages)) * 1000
+          : 0;
+        this.history.delta.push(deltaV);
         if (this.history.timestamps.length > MAX_HISTORY) {
           this.history.timestamps.shift();
           this.history.soc.shift();
@@ -1083,7 +1079,6 @@
         updatePanel(idx);
         updateCombined();
         drawChart();
-        drawCombinedChart();
         updateLastUpdate();
 
         // If both connected, hide "add second" button
@@ -1135,7 +1130,6 @@
 
       updateCombined();
       drawChart();
-      drawCombinedChart();
     }
 
     function updateUI() {
@@ -1146,7 +1140,6 @@
       }
       updateCombined();
       drawChart();
-      drawCombinedChart();
 
       if (!bms[0].connected && !bms[1].connected) {
         if (autoRefreshInterval) toggleAutoRefresh();
@@ -1182,7 +1175,6 @@
       await Promise.all(promises);
       updateCombined();
       drawChart();
-      drawCombinedChart();
       updateLastUpdate();
     }
 
@@ -1473,17 +1465,21 @@
       // Stored energy (Wh)
       const wh0 = d0.voltage * d0.remainAh;
       const wh1 = d1.voltage * d1.remainAh;
-      document.getElementById('combEnergy').textContent = (wh0 + wh1).toFixed(0) + ' Wh';
+      const totalWh = wh0 + wh1;
+      document.getElementById('combEnergy').textContent = totalWh.toFixed(0) + ' Wh';
 
+      // Push to combined history
       const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       combinedHistory.timestamps.push(now);
       combinedHistory.power.push(totalP);
-      combinedHistory.energy.push(wh0 + wh1);
+      combinedHistory.energy.push(totalWh);
       if (combinedHistory.timestamps.length > MAX_HISTORY) {
         combinedHistory.timestamps.shift();
         combinedHistory.power.shift();
         combinedHistory.energy.shift();
       }
+
+      drawCombinedChart();
     }
 
     // ===== Refresh Single Device =====
@@ -1494,7 +1490,6 @@
         updatePanel(idx);
         updateCombined();
         drawChart();
-        drawCombinedChart();
         updateLastUpdate();
       } catch (err) {
         showToast(`BMS ${idx + 1}: ${err.message}`);
@@ -1647,69 +1642,77 @@
         const vMin = Math.min(...h.voltage) - 0.5;
         const vMax = Math.max(...h.voltage) + 0.5;
         drawLine(ctx, h.voltage, vMin, vMax, padL, padT, plotW, plotH, color, 1.5, true);
-        // Delta line (dotted)
+        // Delta line (dotted, in mV)
         if (h.delta.length >= 2) {
           const dMin = 0;
-          const dMax = Math.max(100, Math.max(...h.delta) * 1.1);
-          drawLine(ctx, h.delta, dMin, dMax, padL, padT, plotW, plotH, DELTA_COLORS[i], 1.5, false, [3, 3]);
+          const dMax = Math.max(Math.max(...h.delta) * 1.2, 50);
+          drawLine(ctx, h.delta, dMin, dMax, padL, padT, plotW, plotH, color, 1.5, false, [2, 4]);
         }
 
         // Labels
         const lastSoc = h.soc[h.soc.length - 1];
         const lastV = h.voltage[h.voltage.length - 1];
-        const lastDelta = h.delta[h.delta.length - 1] || 0;
-        const label = `#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V / ${lastDelta.toFixed(0)}mV`;
+        const lastD = h.delta.length ? h.delta[h.delta.length - 1].toFixed(1) : '--';
         ctx.fillStyle = color;
         ctx.font = 'bold 11px -apple-system, sans-serif';
-        ctx.fillText(label, labelX, 14);
-        labelX += ctx.measureText(label).width + 20;
+        ctx.fillText(`#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V / Δ${lastD}mV`, labelX, 14);
+        labelX += ctx.measureText(`#${i + 1} ${lastSoc}% / ${lastV.toFixed(1)}V / Δ${lastD}mV`).width + 20;
 
-        legendHtml += `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${color}"></div>BMS ${i + 1} SOC (solid) / V (dashed) / <span style="color:${DELTA_COLORS[i]}">Δ mV (dotted)</span></div>`;
+        legendHtml += `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${color}"></div>BMS ${i + 1} SOC (solid) / V (dashed) / ΔmV (dotted)</div>`;
       }
 
       legendEl.innerHTML = legendHtml;
     }
 
     function drawCombinedChart() {
-      const section = document.getElementById('combinedHistorySection');
-      const both = bms[0].connected && bms[0].data && bms[1].connected && bms[1].data;
-      section.style.display = both ? '' : 'none';
-      if (!both || combinedHistory.power.length < 2) return;
-
-      const canvas = document.getElementById('combinedChart');
+      const canvas = document.getElementById('combinedHistoryChart');
+      if (!canvas) return;
       const ctx = canvas.getContext('2d');
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.parentElement.getBoundingClientRect();
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       ctx.scale(dpr, dpr);
-      const W = rect.width, H = rect.height;
+      const W = rect.width;
+      const H = rect.height;
       ctx.clearRect(0, 0, W, H);
 
+      const h = combinedHistory;
+      if (h.power.length < 2) return;
+
       const padL = 8, padR = 8, padT = 20, padB = 8;
-      const plotW = W - padL - padR, plotH = H - padT - padB;
+      const plotW = W - padL - padR;
+      const plotH = H - padT - padB;
 
-      const pMin = 0;
-      const pMax = Math.max(100, Math.max(...combinedHistory.power) * 1.1);
-      drawLine(ctx, combinedHistory.power, pMin, pMax, padL, padT, plotW, plotH, '#22c55e', 2, false);
+      const POWER_COLOR = '#60a5fa';
+      const ENERGY_COLOR = '#34d399';
 
-      const eMin = Math.min(...combinedHistory.energy) * 0.9;
-      const eMax = Math.max(100, Math.max(...combinedHistory.energy) * 1.1);
-      drawLine(ctx, combinedHistory.energy, eMin, eMax, padL, padT, plotW, plotH, '#06b6d4', 1.5, true);
+      // Total Power line (solid, blue)
+      const pMin = Math.max(0, Math.min(...h.power) - 10);
+      const pMax = Math.max(...h.power) + 10;
+      drawLine(ctx, h.power, pMin, pMax, padL, padT, plotW, plotH, POWER_COLOR, 2, false);
 
-      const lastP = combinedHistory.power[combinedHistory.power.length - 1];
-      const lastE = combinedHistory.energy[combinedHistory.energy.length - 1];
-      ctx.fillStyle = '#22c55e';
+      // Stored Energy line (dashed, green)
+      const eMin = Math.max(0, Math.min(...h.energy) - 10);
+      const eMax = Math.max(...h.energy) + 10;
+      drawLine(ctx, h.energy, eMin, eMax, padL, padT, plotW, plotH, ENERGY_COLOR, 1.5, true);
+
+      // Labels
+      const lastP = h.power[h.power.length - 1].toFixed(1);
+      const lastE = h.energy[h.energy.length - 1].toFixed(0);
       ctx.font = 'bold 11px -apple-system, sans-serif';
-      const powerLabel = `Power: ${lastP.toFixed(1)} W`;
-      ctx.fillText(powerLabel, padL, 14);
-      const pwLabel = ctx.measureText(powerLabel).width;
-      ctx.fillStyle = '#06b6d4';
-      ctx.fillText(`Energy: ${lastE.toFixed(0)} Wh`, padL + pwLabel + 20, 14);
+      ctx.fillStyle = POWER_COLOR;
+      ctx.fillText(`${lastP} W`, padL, 14);
+      const wLabel = ctx.measureText(`${lastP} W`).width;
+      ctx.fillStyle = ENERGY_COLOR;
+      ctx.fillText(`${lastE} Wh`, padL + wLabel + 20, 14);
 
-      document.getElementById('combinedChartLegend').innerHTML =
-        '<div class="chart-legend-item"><div class="chart-legend-dot" style="background:#22c55e"></div>Combined Power (W)</div>' +
-        '<div class="chart-legend-item"><div class="chart-legend-dot" style="background:#06b6d4"></div>Stored Energy (Wh, dashed)</div>';
+      const legendEl = document.getElementById('combinedChartLegend');
+      if (legendEl) {
+        legendEl.innerHTML =
+          `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${POWER_COLOR}"></div>Total Power (solid)</div>` +
+          `<div class="chart-legend-item"><div class="chart-legend-dot" style="background:${ENERGY_COLOR}"></div>Stored Energy (dashed)</div>`;
+      }
     }
 
     function drawLine(ctx, data, min, max, padL, padT, plotW, plotH, color, lineWidth, dashed, dashPattern) {
@@ -1717,7 +1720,9 @@
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
       ctx.lineJoin = 'round';
-      ctx.setLineDash(dashPattern || (dashed ? [6, 3] : []));
+      if (dashPattern) ctx.setLineDash(dashPattern);
+      else if (dashed) ctx.setLineDash([6, 3]);
+      else ctx.setLineDash([]);
 
       data.forEach((val, i) => {
         const x = padL + (i / (data.length - 1)) * plotW;
@@ -1741,10 +1746,7 @@
       setTimeout(() => t.classList.remove('visible'), 3500);
     }
 
-    window.addEventListener('resize', () => {
-      drawChart();
-      drawCombinedChart();
-    });
+    window.addEventListener('resize', () => { drawChart(); drawCombinedChart(); });
   </script>
 
 </body>
