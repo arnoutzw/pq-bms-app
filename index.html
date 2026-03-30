@@ -697,6 +697,23 @@
     }
 
     .hidden { display: none !important; }
+
+    /* Settings panel */
+    .settings-group { margin-bottom: 16px; }
+    .settings-group-title {
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-dim); margin-bottom: 8px;
+      padding-bottom: 4px; border-bottom: 1px solid var(--border);
+    }
+    .settings-row {
+      display: flex; justify-content: space-between; align-items: center; padding: 6px 0;
+    }
+    .settings-row label { font-size: 0.82rem; color: var(--text); }
+    .settings-row select, .settings-row input[type="text"], .settings-row input[type="password"] {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 8px; font-size: 0.8rem; width: 140px;
+    }
+    #sectionSettings.open .section-body { max-height: 1400px; }
   </style>
   <script>
   // BSI Origin Validation
@@ -815,6 +832,10 @@
       <button id="btnAutoRefresh" class="btn btn-outline btn-sm" onclick="toggleAutoRefresh()">
         Auto: Off
       </button>
+      <button id="btnConnectPs" class="btn btn-outline btn-sm" onclick="togglePowerStream()" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        PowerStream
+      </button>
       <button id="btnAddSecond" class="btn btn-outline btn-sm" onclick="addBmsDevice(1)" style="margin-left:auto;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Add Battery 2
@@ -884,16 +905,92 @@
         </div>
         <div class="section-body"><div class="section-content">
           <div class="chart-controls">
-            <span>Moving Avg:</span>
-            <select id="maWindow" onchange="setMaWindow(+this.value)">
-              <option value="0">Off</option>
-              <option value="3">3 pts</option>
-              <option value="5">5 pts</option>
-              <option value="10">10 pts</option>
-              <option value="20">20 pts</option>
-            </select>
+            <span>MA filters configurable in Settings</span>
           </div>
           <div class="chart-container" id="historyChart"></div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- PowerStream Section (visible when MQTT connected) -->
+    <div id="psSection" style="display:none;">
+      <div class="combined-banner visible" style="margin-top:12px;background:linear-gradient(135deg, rgba(96,165,250,0.08), rgba(52,211,153,0.08));">
+        <div class="combined-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/></svg>
+          EcoFlow PowerStream
+          <span id="psMqttStatus" class="badge badge-green" style="margin-left:8px;">Connected</span>
+        </div>
+        <div class="combined-stats">
+          <div class="combined-stat"><div id="psSolarW" class="combined-stat-value">--</div><div class="combined-stat-label">Solar Input</div></div>
+          <div class="combined-stat"><div id="psBatSoc" class="combined-stat-value">--</div><div class="combined-stat-label">Battery SOC</div></div>
+          <div class="combined-stat"><div id="psInvW" class="combined-stat-value">--</div><div class="combined-stat-label">Inverter Out</div></div>
+          <div class="combined-stat"><div id="psBatW" class="combined-stat-value">--</div><div class="combined-stat-label">Battery Power</div></div>
+        </div>
+      </div>
+      <div class="history-section">
+        <div class="section" id="sectionPsDetail">
+          <div class="section-header" onclick="toggleSection('sectionPsDetail')">
+            <div class="section-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Details</div>
+            <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div class="section-body"><div class="section-content">
+            <div class="info-row"><span class="info-label">PV1</span><span id="psPv1" class="info-value">--</span></div>
+            <div class="info-row"><span class="info-label">PV2</span><span id="psPv2" class="info-value">--</span></div>
+            <div class="info-row"><span class="info-label">Battery Voltage</span><span id="psBatV" class="info-value">--</span></div>
+            <div class="info-row"><span class="info-label">Battery Temp</span><span id="psBatTemp" class="info-value">--</span></div>
+            <div class="info-row"><span class="info-label">Inverter Voltage</span><span id="psInvV" class="info-value">--</span></div>
+            <div class="info-row"><span class="info-label">Inverter Freq</span><span id="psInvFreq" class="info-value">--</span></div>
+            <div class="info-row"><span class="info-label">Inverter Temp</span><span id="psInvTemp" class="info-value">--</span></div>
+          </div></div>
+        </div>
+        <div class="section" id="sectionPsHistory">
+          <div class="section-header" onclick="toggleSection('sectionPsHistory')">
+            <div class="section-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> PowerStream History</div>
+            <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div class="section-body"><div class="section-content">
+            <div class="chart-container" id="psHistoryChart"></div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Section -->
+    <div class="history-section fade-in">
+      <div class="section" id="sectionSettings">
+        <div class="section-header" onclick="toggleSection('sectionSettings')">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            Settings
+          </div>
+          <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="section-body"><div class="section-content">
+          <div class="settings-group">
+            <div class="settings-group-title">Battery Chart — Moving Average</div>
+            <div class="settings-row"><label>SOC</label><select id="setSocMa" onchange="updateSetting('ma_soc',+this.value)"><option value="0">Off</option><option value="3">3</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="30">30</option></select></div>
+            <div class="settings-row"><label>Voltage</label><select id="setVoltageMa" onchange="updateSetting('ma_voltage',+this.value)"><option value="0">Off</option><option value="3">3</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="30">30</option></select></div>
+            <div class="settings-row"><label>Delta</label><select id="setDeltaMa" onchange="updateSetting('ma_delta',+this.value)"><option value="0">Off</option><option value="3">3</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="30">30</option></select></div>
+          </div>
+          <div class="settings-group">
+            <div class="settings-group-title">Combined Chart — Moving Average</div>
+            <div class="settings-row"><label>Power</label><select id="setPowerMa" onchange="updateSetting('ma_power',+this.value)"><option value="0">Off</option><option value="3">3</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="30">30</option></select></div>
+            <div class="settings-row"><label>Energy</label><select id="setEnergyMa" onchange="updateSetting('ma_energy',+this.value)"><option value="0">Off</option><option value="3">3</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="30">30</option></select></div>
+          </div>
+          <div class="settings-group">
+            <div class="settings-group-title">General</div>
+            <div class="settings-row"><label>Auto-refresh</label><select id="setRefresh" onchange="updateSetting('refreshInterval',+this.value)"><option value="1000">1s</option><option value="2000">2s</option><option value="5000">5s</option><option value="10000">10s</option><option value="30000">30s</option></select></div>
+            <div class="settings-row"><label>History buffer</label><select id="setHistory" onchange="updateSetting('maxHistory',+this.value)"><option value="30">30 pts</option><option value="60">60 pts</option><option value="120">120 pts</option><option value="240">240 pts</option></select></div>
+          </div>
+          <div class="settings-group">
+            <div class="settings-group-title">EcoFlow PowerStream (MQTT)</div>
+            <div class="settings-row"><label>Broker URL</label><input type="text" id="setPsBroker" placeholder="ws://host:9001" onchange="updateSetting('ps_broker',this.value)"></div>
+            <div class="settings-row"><label>Serial Number</label><input type="text" id="setPsTopic" placeholder="HW51..." onchange="updateSetting('ps_topic',this.value)"></div>
+            <div class="settings-row"><label>Username</label><input type="text" id="setPsUser" placeholder="(optional)" onchange="updateSetting('ps_username',this.value)"></div>
+            <div class="settings-row"><label>Password</label><input type="password" id="setPsPass" placeholder="(optional)" onchange="updateSetting('ps_password',this.value)"></div>
+            <div style="font-size:0.68rem;color:var(--text-dim);margin-top:4px;">Requires a local MQTT broker with WebSocket enabled (e.g., Mosquitto). Credentials stored locally in plain text.</div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="resetSettings()" style="margin-top:12px;">Reset to Defaults</button>
         </div></div>
       </div>
     </div>
@@ -911,7 +1008,7 @@
     const CMD_GET_VERSION = new Uint8Array([0x00, 0x00, 0x04, 0x01, 0x16, 0x55, 0xAA, 0x1A]);
     const CMD_GET_BATTERY = new Uint8Array([0x00, 0x00, 0x04, 0x01, 0x13, 0x55, 0xAA, 0x17]);
 
-    const MAX_HISTORY = 60;
+    let MAX_HISTORY = 60;
     const COLORS = ['#f59e0b', '#fbbf24'];       // accent per device
     const COLOR_NAMES = ['var(--accent)', 'var(--accent2)'];
     const LABELS = ['Battery 1', 'Battery 2'];
@@ -1063,13 +1160,61 @@
     const bms = [new BmsConnection(0), new BmsConnection(1)];
     const combinedHistory = { timestamps: [], power: [], energy: [] };
     let autoRefreshInterval = null;
-    let maWindow = 0;
 
-    function setMaWindow(w) {
-      maWindow = w;
+    // ===== Settings =====
+    const SETTINGS_KEY = 'pqbms_settings';
+    const SETTINGS_DEFAULTS = {
+      ma_soc: 0, ma_voltage: 0, ma_delta: 0,
+      ma_power: 0, ma_energy: 0,
+      refreshInterval: 5000,
+      maxHistory: 60,
+      ps_broker: '', ps_topic: '',
+      ps_username: '', ps_password: '',
+    };
+    let settings = { ...SETTINGS_DEFAULTS };
+
+    function loadSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+        if (saved) settings = { ...SETTINGS_DEFAULTS, ...saved };
+      } catch(e) {}
+      applySettings();
+    }
+    function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
+    function updateSetting(key, value) { settings[key] = value; saveSettings(); applySettings(); }
+    function applySettings() {
+      MAX_HISTORY = settings.maxHistory;
+      [bms[0].history, bms[1].history, combinedHistory, ps.history].forEach(h => {
+        for (const k of Object.keys(h)) {
+          if (Array.isArray(h[k]) && h[k].length > MAX_HISTORY) h[k] = h[k].slice(-MAX_HISTORY);
+        }
+      });
+      if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = setInterval(refreshAll, settings.refreshInterval);
+        const btn = document.getElementById('btnAutoRefresh');
+        if (btn) btn.textContent = 'Auto: ' + (settings.refreshInterval / 1000) + 's';
+      }
+      const psBtn = document.getElementById('btnConnectPs');
+      if (psBtn) psBtn.style.display = settings.ps_broker ? '' : 'none';
       drawChart();
       drawCombinedChart();
+      syncSettingsUI();
     }
+    function syncSettingsUI() {
+      const map = {
+        setSocMa: 'ma_soc', setVoltageMa: 'ma_voltage', setDeltaMa: 'ma_delta',
+        setPowerMa: 'ma_power', setEnergyMa: 'ma_energy',
+        setRefresh: 'refreshInterval', setHistory: 'maxHistory',
+        setPsBroker: 'ps_broker', setPsTopic: 'ps_topic',
+        setPsUser: 'ps_username', setPsPass: 'ps_password',
+      };
+      for (const [id, key] of Object.entries(map)) {
+        const el = document.getElementById(id);
+        if (el) el.value = settings[key];
+      }
+    }
+    function resetSettings() { settings = { ...SETTINGS_DEFAULTS }; saveSettings(); applySettings(); }
 
     function movingAverage(data, w) {
       if (!w || w < 2) return null;
@@ -1078,6 +1223,92 @@
         return slice.reduce((a, b) => a + b, 0) / slice.length;
       });
     }
+
+    // ===== MQTT Library (lazy load) =====
+    function loadMqttLib() {
+      return new Promise((resolve, reject) => {
+        if (window.mqtt) return resolve();
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/mqtt@5/dist/mqtt.min.js';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('Failed to load MQTT library'));
+        document.head.appendChild(s);
+      });
+    }
+
+    // ===== PowerStream Connection =====
+    class PowerStreamConnection {
+      constructor() {
+        this.client = null;
+        this.connected = false;
+        this.data = null;
+        this.history = { timestamps: [], solarW: [], batSoc: [], invW: [] };
+      }
+
+      async connect() {
+        await loadMqttLib();
+        const opts = { reconnectPeriod: 5000 };
+        if (settings.ps_username) { opts.username = settings.ps_username; opts.password = settings.ps_password; }
+        this.client = mqtt.connect(settings.ps_broker, opts);
+        this.client.on('connect', () => { this.connected = true; this.subscribe(); updatePsUI(); showToast('PowerStream connected'); });
+        this.client.on('message', (topic, msg) => this.handleMessage(topic, msg));
+        this.client.on('error', (err) => showToast('PowerStream: ' + err.message));
+        this.client.on('close', () => { this.connected = false; updatePsUI(); });
+      }
+
+      subscribe() {
+        const sn = settings.ps_topic;
+        this.client.subscribe([`/app/device/property/${sn}`, `+/+/${sn}/quota`, `ecoflow/${sn}/#`]);
+      }
+
+      handleMessage(topic, raw) {
+        try {
+          const payload = JSON.parse(raw.toString());
+          const p = payload.params || payload;
+          if (!this.data) this.data = {
+            pv1Watts: 0, pv2Watts: 0, pv1Voltage: 0, pv2Voltage: 0,
+            batSoc: 0, batInputWatts: 0, batOutputWatts: 0, batVoltage: 0, batTemp: 0,
+            invOutputWatts: 0, invVoltage: 0, invFreq: 0, invTemp: 0,
+          };
+          const fields = {
+            'pv1InputWatts': 'pv1Watts', 'pv2InputWatts': 'pv2Watts',
+            'pv1InputVolt': 'pv1Voltage', 'pv2InputVolt': 'pv2Voltage',
+            'batSoc': 'batSoc',
+            'batInputWatts': 'batInputWatts', 'batOutputWatts': 'batOutputWatts',
+            'batVolt': 'batVoltage', 'batTemp': 'batTemp',
+            'invOutputWatts': 'invOutputWatts', 'invOutputVolt': 'invVoltage',
+            'invFreq': 'invFreq', 'invTemp': 'invTemp',
+          };
+          for (const [src, dst] of Object.entries(fields)) {
+            const val = p[src] ?? p['20_1.' + src];
+            if (val !== undefined) this.data[dst] = val / 10;
+          }
+          this.pushHistory();
+          updatePsPanel();
+          drawPsChart();
+        } catch(e) { /* ignore malformed */ }
+      }
+
+      pushHistory() {
+        if (!this.data) return;
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        this.history.timestamps.push(now);
+        this.history.solarW.push(this.data.pv1Watts + this.data.pv2Watts);
+        this.history.batSoc.push(this.data.batSoc);
+        this.history.invW.push(this.data.invOutputWatts);
+        if (this.history.timestamps.length > MAX_HISTORY) {
+          for (const k of Object.keys(this.history)) this.history[k].shift();
+        }
+      }
+
+      disconnect() {
+        if (this.client) { this.client.end(); this.client = null; }
+        this.connected = false;
+        updatePsUI();
+      }
+    }
+
+    const ps = new PowerStreamConnection();
 
     // ===== Init =====
     window.addEventListener('DOMContentLoaded', () => {
@@ -1089,6 +1320,7 @@
         navigator.serviceWorker.register('sw.js').catch(() => {});
       }
       renderEmptyPanels();
+      loadSettings();
     });
 
     // ===== Connect =====
@@ -1223,8 +1455,8 @@
         btn.style.borderColor = '';
         btn.style.color = '';
       } else {
-        autoRefreshInterval = setInterval(refreshAll, 5000);
-        btn.textContent = 'Auto: 5s';
+        autoRefreshInterval = setInterval(refreshAll, settings.refreshInterval);
+        btn.textContent = 'Auto: ' + (settings.refreshInterval / 1000) + 's';
         btn.style.borderColor = 'var(--green)';
         btn.style.color = 'var(--green)';
       }
@@ -1678,8 +1910,8 @@
           line: { color, width: 2 }, yaxis: 'y',
           hovertemplate: '%{y:.0f}%<extra>' + label + ' SOC</extra>' });
 
-        const ma_soc = movingAverage(h.soc, maWindow);
-        if (ma_soc) traces.push({ name: `${label} SOC MA${maWindow}`, x: xs, y: ma_soc,
+        const ma_soc = movingAverage(h.soc, settings.ma_soc);
+        if (ma_soc) traces.push({ name: `${label} SOC MA${settings.ma_soc}`, x: xs, y: ma_soc,
           mode: 'lines', line: { color, width: 1.5, dash: 'dot' }, opacity: 0.7,
           yaxis: 'y', showlegend: false,
           hovertemplate: '%{y:.1f}%<extra>' + label + ' SOC MA</extra>' });
@@ -1688,12 +1920,18 @@
           line: { color, width: 1.5, dash: 'dash' }, yaxis: 'y2',
           hovertemplate: '%{y:.2f} V<extra>' + label + ' Voltage</extra>' });
 
+        const ma_v = movingAverage(h.voltage, settings.ma_voltage);
+        if (ma_v) traces.push({ name: `${label} V MA${settings.ma_voltage}`, x: xs, y: ma_v,
+          mode: 'lines', line: { color, width: 1, dash: 'longdashdot' }, opacity: 0.6,
+          yaxis: 'y2', showlegend: false,
+          hovertemplate: '%{y:.2f} V<extra>' + label + ' V MA</extra>' });
+
         traces.push({ name: `${label} ΔmV`, x: xs, y: h.delta, mode: 'lines',
           line: { color, width: 1.5, dash: 'dot' }, yaxis: 'y3',
           hovertemplate: '%{y:.1f} mV<extra>' + label + ' Delta</extra>' });
 
-        const ma_delta = movingAverage(h.delta, maWindow);
-        if (ma_delta) traces.push({ name: `${label} Δ MA${maWindow}`, x: xs, y: ma_delta,
+        const ma_delta = movingAverage(h.delta, settings.ma_delta);
+        if (ma_delta) traces.push({ name: `${label} Δ MA${settings.ma_delta}`, x: xs, y: ma_delta,
           mode: 'lines', line: { color, width: 1, dash: 'longdash' }, opacity: 0.6,
           yaxis: 'y3', showlegend: false,
           hovertemplate: '%{y:.1f} mV<extra>' + label + ' Delta MA</extra>' });
@@ -1720,14 +1958,14 @@
           hovertemplate: '%{y:.0f} Wh<extra>Energy</extra>' },
       ];
 
-      const ma_p = movingAverage(h.power, maWindow);
-      if (ma_p) traces.push({ name: `Power MA${maWindow}`, x: h.timestamps, y: ma_p,
+      const ma_p = movingAverage(h.power, settings.ma_power);
+      if (ma_p) traces.push({ name: `Power MA${settings.ma_power}`, x: h.timestamps, y: ma_p,
         mode: 'lines', line: { color: POWER_COLOR, width: 1.5, dash: 'dot' }, opacity: 0.7,
         yaxis: 'y', showlegend: false,
         hovertemplate: '%{y:.1f} W<extra>Power MA</extra>' });
 
-      const ma_e = movingAverage(h.energy, maWindow);
-      if (ma_e) traces.push({ name: `Energy MA${maWindow}`, x: h.timestamps, y: ma_e,
+      const ma_e = movingAverage(h.energy, settings.ma_energy);
+      if (ma_e) traces.push({ name: `Energy MA${settings.ma_energy}`, x: h.timestamps, y: ma_e,
         mode: 'lines', line: { color: ENERGY_COLOR, width: 1.5, dash: 'dot' }, opacity: 0.7,
         yaxis: 'y2', showlegend: false,
         hovertemplate: '%{y:.0f} Wh<extra>Energy MA</extra>' });
@@ -1740,6 +1978,71 @@
       });
 
       Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+    }
+
+    // ===== PowerStream UI =====
+    function updatePsPanel() {
+      if (!ps.data) return;
+      const d = ps.data;
+      document.getElementById('psSolarW').textContent = (d.pv1Watts + d.pv2Watts).toFixed(0) + ' W';
+      document.getElementById('psBatSoc').textContent = d.batSoc.toFixed(0) + '%';
+      document.getElementById('psInvW').textContent = d.invOutputWatts.toFixed(0) + ' W';
+      document.getElementById('psBatW').textContent = (d.batInputWatts - d.batOutputWatts).toFixed(0) + ' W';
+      document.getElementById('psPv1').textContent = d.pv1Watts.toFixed(0) + ' W / ' + d.pv1Voltage.toFixed(1) + ' V';
+      document.getElementById('psPv2').textContent = d.pv2Watts.toFixed(0) + ' W / ' + d.pv2Voltage.toFixed(1) + ' V';
+      document.getElementById('psBatV').textContent = d.batVoltage.toFixed(1) + ' V';
+      document.getElementById('psBatTemp').textContent = d.batTemp.toFixed(0) + '\u00B0C';
+      document.getElementById('psInvV').textContent = d.invVoltage.toFixed(1) + ' V';
+      document.getElementById('psInvFreq').textContent = d.invFreq.toFixed(1) + ' Hz';
+      document.getElementById('psInvTemp').textContent = d.invTemp.toFixed(0) + '\u00B0C';
+    }
+
+    function updatePsUI() {
+      const section = document.getElementById('psSection');
+      if (section) section.style.display = ps.connected ? '' : 'none';
+      const btn = document.getElementById('btnConnectPs');
+      if (btn) {
+        if (ps.connected) {
+          btn.style.borderColor = 'var(--green)';
+          btn.style.color = 'var(--green)';
+        } else {
+          btn.style.borderColor = '';
+          btn.style.color = '';
+        }
+      }
+    }
+
+    function drawPsChart() {
+      const el = document.getElementById('psHistoryChart');
+      if (!el || ps.history.solarW.length < 2) return;
+      const h = ps.history;
+      const traces = [
+        { name: 'Solar W', x: h.timestamps, y: h.solarW, mode: 'lines',
+          line: { color: '#f59e0b', width: 2 }, yaxis: 'y',
+          hovertemplate: '%{y:.0f} W<extra>Solar</extra>' },
+        { name: 'Inverter W', x: h.timestamps, y: h.invW, mode: 'lines',
+          line: { color: '#60a5fa', width: 2 }, yaxis: 'y',
+          hovertemplate: '%{y:.0f} W<extra>Inverter</extra>' },
+        { name: 'Battery %', x: h.timestamps, y: h.batSoc, mode: 'lines',
+          line: { color: '#34d399', width: 1.5, dash: 'dash' }, yaxis: 'y2',
+          hovertemplate: '%{y:.0f}%<extra>Battery SOC</extra>' },
+      ];
+      const layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+        yaxis:  { title: 'W', tickfont: { size: 8 }, gridcolor: '#2a2a2a', side: 'left' },
+        yaxis2: { title: '%', overlaying: 'y', side: 'right', range: [0, 100],
+                  tickfont: { size: 8 }, showgrid: false },
+      });
+      Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+    }
+
+    function togglePowerStream() {
+      if (ps.connected) {
+        ps.disconnect();
+      } else {
+        if (!settings.ps_broker) { showToast('Set MQTT broker URL in Settings first'); return; }
+        if (!settings.ps_topic) { showToast('Set PowerStream serial number in Settings first'); return; }
+        ps.connect();
+      }
     }
 
     // ===== UI Helpers =====
@@ -1757,6 +2060,8 @@
     window.addEventListener('resize', () => {
       Plotly.Plots.resize('historyChart');
       Plotly.Plots.resize('combinedHistoryChart');
+      const psEl = document.getElementById('psHistoryChart');
+      if (psEl && ps.connected) Plotly.Plots.resize('psHistoryChart');
     });
   </script>
 
