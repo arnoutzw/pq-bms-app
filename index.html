@@ -12,6 +12,10 @@
   <link rel="apple-touch-icon" href="icon-192.png">
   <title>Powerqueen BMS Monitor</title>
   <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js"></script>
+  <!-- Firebase compat SDK for anonymous auth + Storage CSV logging -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -900,6 +904,7 @@
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
             </svg>
             Live History
+            <span id="historyStatus" style="font-size:0.68rem;color:var(--text-dim);margin-left:6px;font-weight:400;"></span>
           </div>
           <svg class="section-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
@@ -1026,6 +1031,8 @@
         this.data = null;       // latest parsed battery data
         this.version = null;    // parsed version info
         this.history = { timestamps: [], soc: [], voltage: [], delta: [] };
+        this.mab    = new MovingAverageBuffer(6); // 6 × 5 s = 30 s window before storage
+        this.logger = null;                       // HistoryLogger, created on connect
       }
 
       async connect() {
@@ -1135,6 +1142,23 @@
           this.history.voltage.shift();
           this.history.delta.shift();
         }
+
+        // Feed into 30 s moving-average buffer; append to logger when window emits
+        if (this.logger) {
+          const avg = this.mab.push({
+            timestamp_iso: new Date().toISOString(),
+            soc:         this.data.soc,
+            voltage:     this.data.voltage,
+            current:     this.data.current,
+            power:       this.data.power,
+            temp_cell:   this.data.cellTemp,
+            temp_mosfet: this.data.mosTemp
+          });
+          if (avg) {
+            this.logger.append(avg);
+            if (this.logger.rows.length % 20 === 0) this.logger.flush(); // ~10 min periodic flush
+          }
+        }
       }
 
       disconnect() {
@@ -1144,6 +1168,7 @@
       }
 
       onDisconnected() {
+        if (this.logger) this.logger.flush(); // fire-and-forget on unexpected disconnect
         this.connected = false;
         this.characteristic = null;
         this.server = null;
@@ -1160,6 +1185,192 @@
     const bms = [new BmsConnection(0), new BmsConnection(1)];
     const combinedHistory = { timestamps: [], power: [], energy: [] };
     let autoRefreshInterval = null;
+
+    // ===== Firebase Storage — CSV History Logging =====
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyAJ6y1Jz8OHj2gbnWRZIk1TGZLcggvAMQ4",
+      authDomain: "arnout-s-homelab.firebaseapp.com",
+      projectId: "arnout-s-homelab",
+      storageBucket: "arnout-s-homelab.firebasestorage.app",
+      messagingSenderId: "258011834485",
+      appId: "1:258011834485:web:5afb1efaa303b4dd93f03c"
+    };
+    let storageRef = null;
+    let authReady = Promise.resolve();
+    // historyData[idx]: downsampled rows loaded from Storage for each device
+    const historyData = [null, null];
+
+    function initFirebase() {
+      const app = firebase.initializeApp(FIREBASE_CONFIG);
+      storageRef = firebase.storage(app).ref();
+      authReady = new Promise(resolve => {
+        firebase.auth(app).signInAnonymously()
+          .then(() => resolve())
+          .catch(err => { console.warn('Firebase anon auth failed:', err); resolve(); });
+      });
+    }
+
+    // ===== Moving Average Buffer (pre-storage: 6 × 5 s = 30 s window) =====
+    class MovingAverageBuffer {
+      constructor(windowSize) {
+        this.windowSize = windowSize;
+        this.rawBuf = [];
+      }
+      push(reading) {
+        this.rawBuf.push(reading);
+        if (this.rawBuf.length < this.windowSize) return null;
+        const avg = this._average(this.rawBuf);
+        this.rawBuf = [];
+        return avg;
+      }
+      _average(rows) {
+        const fields = ['soc', 'voltage', 'current', 'power', 'temp_cell', 'temp_mosfet'];
+        const result = { timestamp_iso: rows[rows.length - 1].timestamp_iso };
+        for (const f of fields) {
+          result[f] = rows.reduce((s, r) => s + (parseFloat(r[f]) || 0), 0) / rows.length;
+        }
+        return result;
+      }
+    }
+
+    // ===== History Logger (one per BmsConnection per session) =====
+    class HistoryLogger {
+      constructor(deviceName) {
+        this.deviceName = deviceName;
+        this.rows = [];
+        this.sessionKey = null;
+        this.isFlushing = false;
+      }
+      append(point) {
+        if (!this.sessionKey) {
+          const now = new Date();
+          const d = now.toISOString().slice(0, 10);
+          const t = now.toTimeString().slice(0, 8).replace(/:/g, '');
+          this.sessionKey = `${d}_${t}`;
+        }
+        this.rows.push(point);
+      }
+      toCsv() {
+        const hdr = 'timestamp_iso,soc,voltage,current,power,temp_cell,temp_mosfet';
+        const lines = this.rows.map(r =>
+          `${r.timestamp_iso},${(+r.soc).toFixed(1)},${(+r.voltage).toFixed(3)},` +
+          `${(+r.current).toFixed(3)},${(+r.power).toFixed(2)},` +
+          `${(+r.temp_cell).toFixed(1)},${(+r.temp_mosfet).toFixed(1)}`
+        );
+        return [hdr, ...lines].join('\n');
+      }
+      async flush() {
+        if (this.isFlushing || this.rows.length === 0 || !this.sessionKey || !storageRef) return;
+        this.isFlushing = true;
+        try {
+          await authReady;
+          const blob = new Blob([this.toCsv()], { type: 'text/csv' });
+          await storageRef.child(`bms-history/${this.deviceName}/${this.sessionKey}.csv`).put(blob);
+        } catch (e) {
+          console.warn('History flush failed:', e);
+        } finally {
+          this.isFlushing = false;
+        }
+      }
+    }
+
+    // ===== CSV Parser =====
+    function parseCSV(text) {
+      const lines = text.trim().split('\n');
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',').map(h => h.trim());
+      return lines.slice(1).map(line => {
+        const vals = line.split(',');
+        const row = {};
+        headers.forEach((h, i) => { row[h] = vals[i]?.trim() ?? ''; });
+        return row;
+      });
+    }
+
+    // ===== Tiered Downsampling (30 s → 1 min → 5 min → 15 min) =====
+    function downsampleByAge(rows) {
+      const now = Date.now();
+      const H1 = 3600e3, H24 = 86400e3, D3 = 3 * H24, D7 = 7 * H24;
+      const tiers = [[H1, 1], [H24, 2], [D3, 10], [D7, 30]];
+      const buckets = [[], [], [], []];
+      for (const row of rows) {
+        const age = now - new Date(row.timestamp_iso).getTime();
+        if (isNaN(age) || age > D7) continue;
+        if      (age <= H1)  buckets[0].push(row);
+        else if (age <= H24) buckets[1].push(row);
+        else if (age <= D3)  buckets[2].push(row);
+        else                 buckets[3].push(row);
+      }
+      const result = [];
+      for (let t = 0; t < tiers.length; t++) {
+        const binSize = tiers[t][1];
+        const bucket = buckets[t];
+        for (let i = 0; i < bucket.length; i += binSize) {
+          const chunk = bucket.slice(i, i + binSize);
+          const mid = chunk[Math.floor(chunk.length / 2)];
+          result.push({
+            timestamp_iso: mid.timestamp_iso,
+            soc:     chunk.reduce((s, r) => s + parseFloat(r.soc     || 0), 0) / chunk.length,
+            voltage: chunk.reduce((s, r) => s + parseFloat(r.voltage || 0), 0) / chunk.length,
+          });
+        }
+      }
+      return result.sort((a, b) => new Date(a.timestamp_iso) - new Date(b.timestamp_iso));
+    }
+
+    // ===== Load Historical CSV Data from Firebase Storage =====
+    async function loadDeviceHistory(deviceName, idx) {
+      if (!storageRef) return;
+      const statusEl = document.getElementById('historyStatus');
+      try {
+        await authReady;
+        let listResult;
+        try { listResult = await storageRef.child(`bms-history/${deviceName}`).listAll(); }
+        catch (e) { return; } // no history directory yet
+
+        if (listResult.items.length === 0) return;
+
+        const D7ago = Date.now() - 7 * 24 * 3600e3;
+        const recent = listResult.items.filter(item => {
+          const m = item.name.match(/^(\d{4}-\d{2}-\d{2})_(\d{6})\.csv$/);
+          if (!m) return false;
+          const ts = new Date(`${m[1]}T${m[2].slice(0,2)}:${m[2].slice(2,4)}:${m[2].slice(4,6)}`).getTime();
+          return ts >= D7ago;
+        });
+        if (recent.length === 0) return;
+
+        if (statusEl) statusEl.textContent = `Loading ${recent.length} session(s)…`;
+
+        const allRows = [];
+        await Promise.all(recent.map(async item => {
+          try {
+            const url  = await item.getDownloadURL();
+            const text = await (await fetch(url)).text();
+            allRows.push(...parseCSV(text));
+          } catch (e) { console.warn('Failed to fetch history:', item.name, e); }
+        }));
+
+        if (allRows.length === 0) { if (statusEl) statusEl.textContent = ''; return; }
+        allRows.sort((a, b) => new Date(a.timestamp_iso) - new Date(b.timestamp_iso));
+
+        const sampled = downsampleByAge(allRows);
+        if (sampled.length === 0) { if (statusEl) statusEl.textContent = ''; return; }
+
+        historyData[idx] = {
+          timestamps: sampled.map(r => r.timestamp_iso),
+          soc:        sampled.map(r => +r.soc),
+          voltage:    sampled.map(r => +r.voltage),
+        };
+
+        drawChart(); // re-render to include historical traces
+        if (statusEl) statusEl.textContent = `+${sampled.length} pts hist`;
+        setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 4000);
+
+      } catch (e) {
+        console.warn('loadDeviceHistory error:', e);
+        if (statusEl) statusEl.textContent = '';
+      }
+    }
 
     // ===== Settings =====
     const SETTINGS_KEY = 'pqbms_settings';
@@ -1319,8 +1530,13 @@
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js').catch(() => {});
       }
+      initFirebase();
       renderEmptyPanels();
       loadSettings();
+    });
+
+    window.addEventListener('beforeunload', () => {
+      bms.forEach(b => { if (b.logger) b.logger.flush(); });
     });
 
     // ===== Connect =====
@@ -1342,6 +1558,10 @@
 
         // Update panels
         buildPanelHtml(idx);
+
+        // Create session logger and start loading historical data (non-blocking)
+        bms[idx].logger = new HistoryLogger(bms[idx].name);
+        loadDeviceHistory(bms[idx].name, idx);
 
         await bms[idx].fetchAll();
         updatePanel(idx);
@@ -1373,6 +1593,7 @@
     }
 
     function disconnectDevice(idx) {
+      if (bms[idx].logger) bms[idx].logger.flush(); // fire-and-forget
       bms[idx].disconnect();
       setHeaderDot(idx, '');
       renderEmptyPanel(idx);
@@ -1909,6 +2130,21 @@
       });
 
       const traces = [];
+
+      // Historical traces (faded, render first so live traces appear on top)
+      for (let i = 0; i < 2; i++) {
+        const hd = historyData[i];
+        if (!hd || hd.soc.length < 2) continue;
+        const alpha = i === 0 ? 'rgba(245,158,11,0.18)' : 'rgba(251,191,36,0.18)';
+        const label = `B${i + 1}`;
+        traces.push({ name: `${label} SOC (hist)`, x: hd.timestamps, y: hd.soc,
+          mode: 'lines', line: { color: alpha, width: 1 }, yaxis: 'y',
+          showlegend: false, hovertemplate: '%{y:.0f}%<extra>' + label + ' hist SOC</extra>' });
+        traces.push({ name: `${label} V (hist)`, x: hd.timestamps, y: hd.voltage,
+          mode: 'lines', line: { color: alpha, width: 1, dash: 'dash' }, yaxis: 'y2',
+          showlegend: false, hovertemplate: '%{y:.2f} V<extra>' + label + ' hist V</extra>' });
+      }
+
       for (let i = 0; i < 2; i++) {
         const h = bms[i].history;
         if (h.soc.length < 2) continue;
