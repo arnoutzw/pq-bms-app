@@ -1018,174 +1018,6 @@
     const COLOR_NAMES = ['var(--accent)', 'var(--accent2)'];
     const LABELS = ['Battery 1', 'Battery 2'];
 
-    // ===== BMS Device Class =====
-    class BmsConnection {
-      constructor(index) {
-        this.index = index;
-        this.device = null;
-        this.server = null;
-        this.characteristic = null;
-        this.responseBuffer = new Uint8Array(0);
-        this.currentResolve = null;
-        this.connected = false;
-        this.data = null;       // latest parsed battery data
-        this.version = null;    // parsed version info
-        this.history = { timestamps: [], soc: [], voltage: [], delta: [] };
-        this.mab    = new MovingAverageBuffer(6); // 6 × 5 s = 30 s window before storage
-        this.logger = null;                       // HistoryLogger, created on connect
-      }
-
-      async connect() {
-        this.device = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [SERVICE_UUID] }],
-          optionalServices: [SERVICE_UUID]
-        });
-
-        this.device.addEventListener('gattserverdisconnected', () => this.onDisconnected());
-
-        this.server = await this.device.gatt.connect();
-        const service = await this.server.getPrimaryService(SERVICE_UUID);
-        this.characteristic = await service.getCharacteristic(CHAR_UUID);
-
-        await this.characteristic.startNotifications();
-        this.characteristic.addEventListener('characteristicvaluechanged', (e) => this.onNotification(e));
-
-        this.connected = true;
-      }
-
-      onNotification(event) {
-        const chunk = new Uint8Array(event.target.value.buffer);
-        const combined = new Uint8Array(this.responseBuffer.length + chunk.length);
-        combined.set(this.responseBuffer);
-        combined.set(chunk, this.responseBuffer.length);
-        this.responseBuffer = combined;
-
-        if (this.responseBuffer.length >= 3) {
-          const expectedLen = this.responseBuffer[2] + 4;
-          if (this.responseBuffer.length >= expectedLen) {
-            const packet = this.responseBuffer.slice(0, expectedLen);
-            this.responseBuffer = this.responseBuffer.slice(expectedLen);
-            if (this.currentResolve) {
-              const resolve = this.currentResolve;
-              this.currentResolve = null;
-              resolve(packet);
-            }
-          }
-        }
-      }
-
-      sendCommand(cmd, timeout = 5000) {
-        return new Promise(async (resolve, reject) => {
-          this.responseBuffer = new Uint8Array(0);
-
-          const timer = setTimeout(() => {
-            this.currentResolve = null;
-            reject(new Error('Response timeout'));
-          }, timeout);
-
-          this.currentResolve = (data) => {
-            clearTimeout(timer);
-            resolve(data);
-          };
-
-          try {
-            await this.characteristic.writeValueWithoutResponse(cmd);
-          } catch (err) {
-            clearTimeout(timer);
-            this.currentResolve = null;
-            reject(err);
-          }
-        });
-      }
-
-      async fetchAll() {
-        // Version
-        const versionData = await this.sendCommand(CMD_GET_VERSION);
-        if (crcCheck(versionData)) {
-          this.version = parseVersionData(versionData);
-        }
-        await new Promise(r => setTimeout(r, 500));
-
-        // Battery info
-        const battData = await this.sendCommand(CMD_GET_BATTERY);
-        if (crcCheck(battData)) {
-          this.data = parseBatteryData(battData);
-          this.pushHistory();
-        } else {
-          throw new Error('CRC checksum error');
-        }
-      }
-
-      async refresh() {
-        if (!this.characteristic || !this.connected) return;
-        const battData = await this.sendCommand(CMD_GET_BATTERY);
-        if (crcCheck(battData)) {
-          this.data = parseBatteryData(battData);
-          this.pushHistory();
-        }
-      }
-
-      pushHistory() {
-        if (!this.data) return;
-        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        this.history.timestamps.push(now);
-        this.history.soc.push(this.data.soc);
-        this.history.voltage.push(this.data.voltage);
-        const cellVoltages = Object.values(this.data.cells);
-        const deltaV = cellVoltages.length >= 2
-          ? (Math.max(...cellVoltages) - Math.min(...cellVoltages)) * 1000
-          : 0;
-        this.history.delta.push(deltaV);
-        if (this.history.timestamps.length > MAX_HISTORY) {
-          this.history.timestamps.shift();
-          this.history.soc.shift();
-          this.history.voltage.shift();
-          this.history.delta.shift();
-        }
-
-        // Feed into 30 s moving-average buffer; append to logger when window emits
-        if (this.logger) {
-          const avg = this.mab.push({
-            timestamp_iso: new Date().toISOString(),
-            soc:         this.data.soc,
-            voltage:     this.data.voltage,
-            current:     this.data.current,
-            power:       this.data.power,
-            temp_cell:   this.data.cellTemp,
-            temp_mosfet: this.data.mosTemp
-          });
-          if (avg) {
-            this.logger.append(avg);
-            if (this.logger.rows.length % 20 === 0) this.logger.flush(); // ~10 min periodic flush
-          }
-        }
-      }
-
-      disconnect() {
-        if (this.device && this.device.gatt.connected) {
-          this.device.gatt.disconnect();
-        }
-      }
-
-      onDisconnected() {
-        if (this.logger) this.logger.flush(); // fire-and-forget on unexpected disconnect
-        this.connected = false;
-        this.characteristic = null;
-        this.server = null;
-        showToast(`${this.device?.name || LABELS[this.index]} disconnected`);
-        updateUI();
-      }
-
-      get name() {
-        return this.device?.name || LABELS[this.index];
-      }
-    }
-
-    // ===== Global State =====
-    const bms = [new BmsConnection(0), new BmsConnection(1)];
-    const combinedHistory = { timestamps: [], power: [], energy: [] };
-    let autoRefreshInterval = null;
-
     // ===== Firebase Storage — CSV History Logging =====
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyAJ6y1Jz8OHj2gbnWRZIk1TGZLcggvAMQ4",
@@ -1371,6 +1203,174 @@
         if (statusEl) statusEl.textContent = '';
       }
     }
+
+    // ===== BMS Device Class =====
+    class BmsConnection {
+      constructor(index) {
+        this.index = index;
+        this.device = null;
+        this.server = null;
+        this.characteristic = null;
+        this.responseBuffer = new Uint8Array(0);
+        this.currentResolve = null;
+        this.connected = false;
+        this.data = null;       // latest parsed battery data
+        this.version = null;    // parsed version info
+        this.history = { timestamps: [], soc: [], voltage: [], delta: [] };
+        this.mab    = new MovingAverageBuffer(6); // 6 × 5 s = 30 s window before storage
+        this.logger = null;                       // HistoryLogger, created on connect
+      }
+
+      async connect() {
+        this.device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [SERVICE_UUID] }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        this.device.addEventListener('gattserverdisconnected', () => this.onDisconnected());
+
+        this.server = await this.device.gatt.connect();
+        const service = await this.server.getPrimaryService(SERVICE_UUID);
+        this.characteristic = await service.getCharacteristic(CHAR_UUID);
+
+        await this.characteristic.startNotifications();
+        this.characteristic.addEventListener('characteristicvaluechanged', (e) => this.onNotification(e));
+
+        this.connected = true;
+      }
+
+      onNotification(event) {
+        const chunk = new Uint8Array(event.target.value.buffer);
+        const combined = new Uint8Array(this.responseBuffer.length + chunk.length);
+        combined.set(this.responseBuffer);
+        combined.set(chunk, this.responseBuffer.length);
+        this.responseBuffer = combined;
+
+        if (this.responseBuffer.length >= 3) {
+          const expectedLen = this.responseBuffer[2] + 4;
+          if (this.responseBuffer.length >= expectedLen) {
+            const packet = this.responseBuffer.slice(0, expectedLen);
+            this.responseBuffer = this.responseBuffer.slice(expectedLen);
+            if (this.currentResolve) {
+              const resolve = this.currentResolve;
+              this.currentResolve = null;
+              resolve(packet);
+            }
+          }
+        }
+      }
+
+      sendCommand(cmd, timeout = 5000) {
+        return new Promise(async (resolve, reject) => {
+          this.responseBuffer = new Uint8Array(0);
+
+          const timer = setTimeout(() => {
+            this.currentResolve = null;
+            reject(new Error('Response timeout'));
+          }, timeout);
+
+          this.currentResolve = (data) => {
+            clearTimeout(timer);
+            resolve(data);
+          };
+
+          try {
+            await this.characteristic.writeValueWithoutResponse(cmd);
+          } catch (err) {
+            clearTimeout(timer);
+            this.currentResolve = null;
+            reject(err);
+          }
+        });
+      }
+
+      async fetchAll() {
+        // Version
+        const versionData = await this.sendCommand(CMD_GET_VERSION);
+        if (crcCheck(versionData)) {
+          this.version = parseVersionData(versionData);
+        }
+        await new Promise(r => setTimeout(r, 500));
+
+        // Battery info
+        const battData = await this.sendCommand(CMD_GET_BATTERY);
+        if (crcCheck(battData)) {
+          this.data = parseBatteryData(battData);
+          this.pushHistory();
+        } else {
+          throw new Error('CRC checksum error');
+        }
+      }
+
+      async refresh() {
+        if (!this.characteristic || !this.connected) return;
+        const battData = await this.sendCommand(CMD_GET_BATTERY);
+        if (crcCheck(battData)) {
+          this.data = parseBatteryData(battData);
+          this.pushHistory();
+        }
+      }
+
+      pushHistory() {
+        if (!this.data) return;
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        this.history.timestamps.push(now);
+        this.history.soc.push(this.data.soc);
+        this.history.voltage.push(this.data.voltage);
+        const cellVoltages = Object.values(this.data.cells);
+        const deltaV = cellVoltages.length >= 2
+          ? (Math.max(...cellVoltages) - Math.min(...cellVoltages)) * 1000
+          : 0;
+        this.history.delta.push(deltaV);
+        if (this.history.timestamps.length > MAX_HISTORY) {
+          this.history.timestamps.shift();
+          this.history.soc.shift();
+          this.history.voltage.shift();
+          this.history.delta.shift();
+        }
+
+        // Feed into 30 s moving-average buffer; append to logger when window emits
+        if (this.logger) {
+          const avg = this.mab.push({
+            timestamp_iso: new Date().toISOString(),
+            soc:         this.data.soc,
+            voltage:     this.data.voltage,
+            current:     this.data.current,
+            power:       this.data.power,
+            temp_cell:   this.data.cellTemp,
+            temp_mosfet: this.data.mosTemp
+          });
+          if (avg) {
+            this.logger.append(avg);
+            if (this.logger.rows.length % 20 === 0) this.logger.flush(); // ~10 min periodic flush
+          }
+        }
+      }
+
+      disconnect() {
+        if (this.device && this.device.gatt.connected) {
+          this.device.gatt.disconnect();
+        }
+      }
+
+      onDisconnected() {
+        if (this.logger) this.logger.flush(); // fire-and-forget on unexpected disconnect
+        this.connected = false;
+        this.characteristic = null;
+        this.server = null;
+        showToast(`${this.device?.name || LABELS[this.index]} disconnected`);
+        updateUI();
+      }
+
+      get name() {
+        return this.device?.name || LABELS[this.index];
+      }
+    }
+
+    // ===== Global State =====
+    const bms = [new BmsConnection(0), new BmsConnection(1)];
+    const combinedHistory = { timestamps: [], power: [], energy: [] };
+    let autoRefreshInterval = null;
 
     // ===== Settings =====
     const SETTINGS_KEY = 'pqbms_settings';
